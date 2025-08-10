@@ -2,7 +2,7 @@
 """
 Lexington Development Updates Slack Bot
 
-This script uses OpenAI's Agents API to gather recent Lexington, KY development
+This script uses OpenAI's Responses API to gather recent Lexington, KY development
 stories and posts them to a Slack channel.
 """
 
@@ -11,7 +11,6 @@ import json
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from openai import OpenAI
 
 
 class LexingtonDevBot:
@@ -22,9 +21,6 @@ class LexingtonDevBot:
         
         if not all([self.openai_api_key, self.slack_bot_token, self.slack_channel_id]):
             raise ValueError("Missing required environment variables. Please set OPENAI_API_KEY, SLACK_BOT_TOKEN, and SLACK_CHANNEL_ID.")
-        
-        # Initialize OpenAI client
-        self.client = OpenAI(api_key=self.openai_api_key)
     
     def get_date_range(self) -> str:
         """Get the date range for the past 14 days."""
@@ -32,14 +28,16 @@ class LexingtonDevBot:
         start_date = end_date - timedelta(days=14)
         return f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
     
-    def call_openai_agent(self) -> Optional[List[Dict]]:
-        """Call OpenAI's Agents API to search for Lexington development news."""
-        try:
-            # Create a thread for the conversation
-            thread = self.client.beta.threads.create()
-            
-            # Define the system message with instructions
-            system_message = f"""You are a real estate research assistant specializing in Lexington, Kentucky development news.
+    def call_openai_responses_api(self) -> Optional[List[Dict]]:
+        """Call OpenAI's Responses API to search for Lexington development news."""
+        url = "https://api.openai.com/v1/responses"
+        
+        headers = {
+            "Authorization": f"Bearer {self.openai_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        prompt = f"""You are a real estate research assistant specializing in Lexington, Kentucky development news.
 
 Your task is to search for NEW development projects or related news in Lexington, Kentucky from the past 14 days ({self.get_date_range()}).
 
@@ -67,88 +65,56 @@ After gathering information, return ONLY a JSON array with the most significant 
 Limit to 5-8 items. If no significant updates are found, return an empty array.
 
 Format your final response as valid JSON only, no additional text."""
+        
+        data = {
+            "model": "gpt-4o",
+            "tools": [{"type": "web_search"}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"}
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=60)
+            response.raise_for_status()
             
-            # Add the system message to the thread
-            self.client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=system_message
-            )
+            result = response.json()
             
-            # Create and run the assistant
-            assistant = self.client.beta.assistants.create(
-                name="Lexington Development Researcher",
-                instructions=system_message,
-                model="gpt-4o",
-                tools=[{"type": "web_search"}]
-            )
-            
-            # Run the assistant
-            run = self.client.beta.threads.runs.create(
-                thread_id=thread.id,
-                assistant_id=assistant.id
-            )
-            
-            # Wait for the run to complete
-            while True:
-                run_status = self.client.beta.threads.runs.retrieve(
-                    thread_id=thread.id,
-                    run_id=run.id
-                )
+            # Extract the content from the response
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                # Parse the JSON content
+                parsed_content = json.loads(content)
                 
-                if run_status.status == 'completed':
-                    break
-                elif run_status.status in ['failed', 'cancelled', 'expired']:
-                    print(f"Run failed with status: {run_status.status}")
-                    return None
+                # Look for the results array in the parsed content
+                if isinstance(parsed_content, dict):
+                    # Try to find the array in the response
+                    for key, value in parsed_content.items():
+                        if isinstance(value, list):
+                            return value
+                    # If no array found, return empty
+                    return []
+                elif isinstance(parsed_content, list):
+                    return parsed_content
+                else:
+                    return []
+            else:
+                print("No choices found in OpenAI response")
+                return []
                 
-                # Wait a bit before checking again
-                import time
-                time.sleep(2)
-            
-            # Get the messages from the thread
-            messages = self.client.beta.threads.messages.list(thread_id=thread.id)
-            
-            # Find the assistant's response
-            for message in messages.data:
-                if message.role == 'assistant':
-                    content = message.content[0].text.value
-                    
-                    # Try to extract JSON from the response
-                    try:
-                        # Look for JSON in the response
-                        start_idx = content.find('[')
-                        end_idx = content.rfind(']') + 1
-                        
-                        if start_idx != -1 and end_idx != 0:
-                            json_str = content[start_idx:end_idx]
-                            results = json.loads(json_str)
-                            
-                            if isinstance(results, list):
-                                return results
-                        
-                        # If no array found, try parsing the entire response as JSON
-                        parsed_content = json.loads(content)
-                        if isinstance(parsed_content, list):
-                            return parsed_content
-                        elif isinstance(parsed_content, dict):
-                            # Look for a results array in the dict
-                            for key, value in parsed_content.items():
-                                if isinstance(value, list):
-                                    return value
-                        
-                        return []
-                        
-                    except json.JSONDecodeError as e:
-                        print(f"Error parsing JSON response: {e}")
-                        print(f"Raw response: {content}")
-                        return []
-            
-            print("No assistant response found")
-            return []
-            
+        except requests.exceptions.RequestException as e:
+            print(f"Error calling OpenAI Responses API: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON response: {e}")
+            return None
         except Exception as e:
-            print(f"Error calling OpenAI Agents API: {e}")
+            print(f"Unexpected error: {e}")
             return None
     
     def format_slack_message(self, results: List[Dict]) -> str:
@@ -204,12 +170,12 @@ Format your final response as valid JSON only, no additional text."""
         print("Starting Lexington Development Updates Bot...")
         print(f"Date range: {self.get_date_range()}")
         
-        # Get development news from OpenAI Agents API
-        print("Searching for Lexington development news using OpenAI Agents API...")
-        results = self.call_openai_agent()
+        # Get development news from OpenAI Responses API
+        print("Searching for Lexington development news using OpenAI Responses API...")
+        results = self.call_openai_responses_api()
         
         if results is None:
-            print("Failed to get results from OpenAI Agents API")
+            print("Failed to get results from OpenAI Responses API")
             return False
         
         # Format the message
