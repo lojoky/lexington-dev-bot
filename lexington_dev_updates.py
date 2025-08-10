@@ -2,8 +2,8 @@
 """
 Lexington Development Updates Slack Bot
 
-This script uses OpenAI's Responses API to gather recent Lexington, KY development
-stories and posts them to a Slack channel.
+This script uses OpenAI's Chat Completions API with web search to gather recent
+Lexington, KY development stories and posts them to a Slack channel.
 """
 
 import os
@@ -28,9 +28,9 @@ class LexingtonDevBot:
         start_date = end_date - timedelta(days=14)
         return f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
     
-    def call_openai_responses_api(self) -> Optional[List[Dict]]:
-        """Call OpenAI's Responses API to search for Lexington development news."""
-        url = "https://api.openai.com/v1/responses"
+    def call_openai_chat_api(self) -> Optional[List[Dict]]:
+        """Call OpenAI's Chat Completions API to search for Lexington development news."""
+        url = "https://api.openai.com/v1/chat/completions"
         
         headers = {
             "Authorization": f"Bearer {self.openai_api_key}",
@@ -68,11 +68,15 @@ Format your final response as valid JSON only, no additional text."""
         
         data = {
             "model": "gpt-4o",
-            "tools": [{"type": "web_search"}],
             "messages": [
                 {
                     "role": "user",
                     "content": prompt
+                }
+            ],
+            "tools": [
+                {
+                    "type": "web_search"
                 }
             ],
             "temperature": 0.2,
@@ -108,7 +112,9 @@ Format your final response as valid JSON only, no additional text."""
                 return []
                 
         except requests.exceptions.RequestException as e:
-            print(f"Error calling OpenAI Responses API: {e}")
+            print(f"Error calling OpenAI Chat API: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"Response content: {e.response.text}")
             return None
         except json.JSONDecodeError as e:
             print(f"Error parsing JSON response: {e}")
@@ -170,12 +176,12 @@ Format your final response as valid JSON only, no additional text."""
         print("Starting Lexington Development Updates Bot...")
         print(f"Date range: {self.get_date_range()}")
         
-        # Get development news from OpenAI Responses API
-        print("Searching for Lexington development news using OpenAI Responses API...")
-        results = self.call_openai_responses_api()
+        # Get development news from OpenAI Chat API
+        print("Searching for Lexington development news using OpenAI Chat API...")
+        results = self.call_openai_chat_api()
         
         if results is None:
-            print("Failed to get results from OpenAI Responses API")
+            print("Failed to get results from OpenAI Chat API")
             return False
         
         # Format the message
