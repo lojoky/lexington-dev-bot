@@ -2,7 +2,7 @@
 """
 Lexington Development Updates Slack Bot
 
-This script uses OpenAI's Chat Completions API with web search to gather recent
+This script uses OpenAI's Responses API with web search to gather recent
 Lexington, KY development stories and posts them to a Slack channel.
 """
 
@@ -28,18 +28,16 @@ class LexingtonDevBot:
         start_date = end_date - timedelta(days=14)
         return f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
     
-    def call_openai_chat_api(self) -> Optional[List[Dict]]:
-        """Call OpenAI's Chat Completions API to search for Lexington development news."""
-        url = "https://api.openai.com/v1/chat/completions"
+    def call_openai_responses_api(self) -> Optional[List[Dict]]:
+        """Call OpenAI's Responses API to search for Lexington development news."""
+        url = "https://api.openai.com/v1/responses"
         
         headers = {
             "Authorization": f"Bearer {self.openai_api_key}",
             "Content-Type": "application/json"
         }
         
-        prompt = f"""You are a real estate research assistant specializing in Lexington, Kentucky development news.
-
-Your task is to search for NEW development projects or related news in Lexington, Kentucky from the past 14 days ({self.get_date_range()}).
+        input_text = f"""Search for NEW development projects or related news in Lexington, Kentucky from the past 14 days ({self.get_date_range()}).
 
 Focus on:
 - Real estate development projects
@@ -68,56 +66,71 @@ Format your final response as valid JSON only, no additional text."""
         
         data = {
             "model": "gpt-4o",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
             "tools": [
                 {
-                    "type": "web_search"
+                    "type": "web_search_preview",
+                    "user_location": {
+                        "type": "approximate",
+                        "country": "US",
+                        "city": "Lexington",
+                        "region": "Kentucky"
+                    }
                 }
             ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"}
+            "input": input_text
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data, timeout=60)
+            response = requests.post(url, headers=headers, json=data, timeout=120)
             response.raise_for_status()
             
             result = response.json()
             
-            # Extract the content from the response
-            if 'choices' in result and len(result['choices']) > 0:
-                content = result['choices'][0]['message']['content']
-                # Parse the JSON content
-                parsed_content = json.loads(content)
-                
-                # Look for the results array in the parsed content
-                if isinstance(parsed_content, dict):
-                    # Try to find the array in the response
-                    for key, value in parsed_content.items():
-                        if isinstance(value, list):
-                            return value
-                    # If no array found, return empty
-                    return []
-                elif isinstance(parsed_content, list):
-                    return parsed_content
-                else:
-                    return []
-            else:
-                print("No choices found in OpenAI response")
-                return []
+            # Extract the output text from the response
+            if 'output' in result and len(result['output']) > 0:
+                for output_item in result['output']:
+                    if output_item['type'] == 'message' and 'content' in output_item:
+                        for content_item in output_item['content']:
+                            if content_item['type'] == 'output_text':
+                                text_content = content_item['text']
+                                
+                                # Try to extract JSON from the response
+                                try:
+                                    # Look for JSON in the response
+                                    start_idx = text_content.find('[')
+                                    end_idx = text_content.rfind(']') + 1
+                                    
+                                    if start_idx != -1 and end_idx != 0:
+                                        json_str = text_content[start_idx:end_idx]
+                                        results = json.loads(json_str)
+                                        
+                                        if isinstance(results, list):
+                                            return results
+                                    
+                                    # If no array found, try parsing the entire response as JSON
+                                    parsed_content = json.loads(text_content)
+                                    if isinstance(parsed_content, list):
+                                        return parsed_content
+                                    elif isinstance(parsed_content, dict):
+                                        # Look for a results array in the dict
+                                        for key, value in parsed_content.items():
+                                            if isinstance(value, list):
+                                                return value
+                                    
+                                    return []
+                                    
+                                except json.JSONDecodeError as e:
+                                    print(f"Error parsing JSON response: {e}")
+                                    print(f"Raw response: {text_content}")
+                                    return []
+            
+            print("No valid output found in OpenAI response")
+            return []
                 
         except requests.exceptions.RequestException as e:
-            print(f"Error calling OpenAI Chat API: {e}")
+            print(f"Error calling OpenAI Responses API: {e}")
             if hasattr(e, 'response') and e.response is not None:
                 print(f"Response content: {e.response.text}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON response: {e}")
             return None
         except Exception as e:
             print(f"Unexpected error: {e}")
@@ -135,7 +148,10 @@ Format your final response as valid JSON only, no additional text."""
             summary = item.get('summary', 'No summary')
             url = item.get('url', '#')
             
-            message += f"• *{title}* — {summary}  <{url}|Read more>\n"
+            if url and url != '#':
+                message += f"• *{title}* — {summary}  <{url}|Read more>\n"
+            else:
+                message += f"• *{title}* — {summary}\n"
         
         return message
     
@@ -176,12 +192,12 @@ Format your final response as valid JSON only, no additional text."""
         print("Starting Lexington Development Updates Bot...")
         print(f"Date range: {self.get_date_range()}")
         
-        # Get development news from OpenAI Chat API
-        print("Searching for Lexington development news using OpenAI Chat API...")
-        results = self.call_openai_chat_api()
+        # Get development news from OpenAI Responses API
+        print("Searching for Lexington development news using OpenAI Responses API...")
+        results = self.call_openai_responses_api()
         
         if results is None:
-            print("Failed to get results from OpenAI Chat API")
+            print("Failed to get results from OpenAI Responses API")
             return False
         
         # Format the message
